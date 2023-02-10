@@ -1,129 +1,74 @@
-// import the necessary libraries
-import * as dotenv from 'dotenv';
-import mysql from 'mysql2';
-import { Telegraf } from 'telegraf';
+import dotenv from 'dotenv';
+import extra, { Telegraf } from 'telegraf';
+dotenv.config();
 
-// load the environment variables from the .env file
-dotenv.config()
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// initialize the bot with the Bot Token
-const bot = new Telegraf(process.env.BOT_TOKEN)
+const maleUsers = [];
+const femaleUsers = [];
 
-// middleware to create a connection to the database
-bot.use(async (ctx, next) => {
-    // create a connection to the database
-    ctx.state.connection = await mysql.createConnection({
-        host: process.env.DB_HOST,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
-        database: process.env.DB_NAME
-    })
-    // move to the next middleware or handler
-    await next()
-})
+bot.command('start', (ctx) => {
+    ctx.reply(`Sei maschio o femmina?`, {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: 'Maschio', callback_data: 'male' },
+                    { text: 'Femmina', callback_data: 'female' },
+                ],
+            ],
+        },
+    });
+});
 
-// command handler for '/start' command
-bot.command('start', async (ctx) => {
-    // get the chat id of the user
-    const chatId = ctx.update.message.from.id
-    // message to send to the user
-    const message = `Scegli il tuo sesso:`
-    // inline keyboard with options for the user
-    const inlineKeyboard = [
-        [
-            { text: 'Maschio', callback_data: 'male' },
-            { text: 'Femmina', callback_data: 'female' }
-        ]
-    ]
+bot.action('male', (ctx) => {
+    maleUsers.push(ctx.from.id);
+    ctx.deleteMessage();
+    ctx.reply(`Grazie per aver selezionato il tuo sesso. Attenderemo un partner di sesso opposto.`);
 
-    // send the message to the user with the inline keyboard
-    await ctx.reply(message, { reply_markup: { inline_keyboard: inlineKeyboard } })
-})
+    if (femaleUsers.length > 0) {
+        let partnerId = femaleUsers.shift();
+        bot.telegram.sendMessage(partnerId, `Hai un nuovo partner maschio!`);
+        bot.telegram.sendMessage(ctx.from.id, `Hai un nuovo partner femmina!`);
+    }
+});
 
-// action handler for 'male' callback query
-bot.action('male', async (ctx) => {
-    // get the chat id of the user
-    const chatId = ctx.update.callback_query.from.id
-    // answer the callback query
-    await ctx.answerCbQuery()
-    // set the gender of the user as male
-    ctx.state.gender = 'male'
-    // query the database for an available female user
-    ctx.state.connection.query(`SELECT * FROM users WHERE gender = 'female' AND chatId IS NULL LIMIT 1`, async (error, results) => {
-        if (error) {
-            // log the error
-            console.error(error)
-        } else if (results.length > 0) {
-            // get the first available female user
-            const partner = results[0]
-            // update the chatId of the female user with the chat id of the male user
-            await ctx.state.connection.query(`UPDATE users SET chatId = ${chatId} WHERE id = ${partner.id}`)
-            // set the partner of the male user
-            ctx.state.partner = partner
-            // send a message to start the chat
-            await ctx.reply(`Iniziando chat con un utente di sesso opposto...`)
-            // prompt the user to send a message
-            await ctx.reply(`Scrivi il tuo messaggio.`)
+bot.action('female', (ctx) => {
+    femaleUsers.push(ctx.from.id);
+    ctx.deleteMessage();
+    ctx.reply(`Grazie per aver selezionato il tuo sesso. Attenderemo un partner di sesso opposto.`);
+
+    if (maleUsers.length > 0) {
+        let partnerId = maleUsers.shift();
+        bot.telegram.sendMessage(partnerId, `Hai un nuovo partner femmina!`);
+        bot.telegram.sendMessage(ctx.from.id, `Hai un nuovo partner maschio!`);
+    }
+});
+
+bot.command('end', (ctx) => {
+    ctx.deleteMessage();
+    ctx.reply(`Grazie per aver usato il nostro bot. Speriamo di vederti di nuovo presto!`);
+    let index;
+    if (maleUsers.indexOf(ctx.from.id) !== -1) {
+        index = maleUsers.indexOf(ctx.from.id);
+        maleUsers.splice(index, 1);
+    } else if (femaleUsers.indexOf(ctx.from.id) !== -1) {
+        index = femaleUsers.indexOf(ctx.from.id);
+        femaleUsers.splice(index, 1);
+    }
+});
+
+bot.on('message', (ctx) => {
+    if (maleUsers.indexOf(ctx.from.id) !== -1 || femaleUsers.indexOf(ctx.from.id) !== -1) {
+        let partnerId;
+        if (maleUsers.indexOf(ctx.from.id) !== -1) {
+            partnerId = femaleUsers[maleUsers.indexOf(ctx.from.id)];
         } else {
-            // send a message if there are no available female users
-            await ctx.reply(`Al momento non ci sono utenti di sesso opposto disponibili.`)
+            partnerId = maleUsers[femaleUsers.indexOf(ctx.from.id)];
         }
-    })
-})
-
-bot.action('female', async (ctx) => {
-    const chatId = ctx.update.callback_query.from.id
-    await ctx.answerCbQuery()
-    ctx.state.gender = 'female'
-    ctx.state.connection.query(`SELECT * FROM users WHERE gender = 'male' AND chatId IS NULL LIMIT 1`, async (error, results) => {
-        if (error) {
-            console.error(error)
-        }
-        else if (results.length > 0) {
-            const partner = results[0]
-            await ctx.state.connection.query(`UPDATE users SET chatId = ${chatId} WHERE id = ${partner.id}`)
-            ctx.state.partner = partner
-            await ctx.reply(`Iniziando chat con un utente di sesso opposto...`)
-            await ctx.reply(`Scrivi il tuo messaggio.`)
-        }
-        else {
-            await ctx.reply(`Al momento non ci sono utenti di sesso opposto disponibili.`)
-        }
-    })
-})
-
-// Listener for when a user sends a text message
-bot.on('text', async (ctx) => {
-    // If the user does not have a partner, return and do nothing
-    if (!ctx.state.partner) {
-        return
+        bot.telegram.sendMessage(partnerId, 'Il tuo partner : $(ctx.message.text)');
+    } else {
+        ctx.reply('Per iniziare a chattare, per favore utilizza il comando /start.');
     }
+});
 
-    // Get the text message from the update
-    const message = ctx.update.message.text
-    // Get the chatId of the user who sent the message
-    const chatId = ctx.update.message.from.id
-    // Get the chatId of the user's partner
-    const partnerChatId = ctx.state.partner.chatId
-
-    // If the chatId of the user and the chatId of their partner are the same, return and do nothing
-    if (chatId === partnerChatId) {
-        return
-    }
-
-    // Get the first name of the user who sent the message
-    const name = ctx.update.message.from.first_name
-    // Get the first name of the user's partner
-    const partnerName = ctx.state.partner.firstName
-
-    // Send the message from the user to their partner
-    await ctx.telegram.sendMessage(partnerChatId, `${name}: ${message}`)
-    // Send the message from the partner to the user
-    await ctx.reply(`${partner} : ${message}`)
-})
-
-bot.launch()
-
-
-
-
+bot.launch();
